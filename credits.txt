@@ -1,0 +1,6 @@
+Laser Library
+Authored appearance models and renders from the Glowforge Creative Studio laser-model library.
+Models are inferred reconstructions, not measurement-verified hardware.
+Brand and product names identify the depicted products and remain their owners’ marks.
+Three.js: MIT license, included at vendor/three/LICENSE.
+Research reference media is not included.
