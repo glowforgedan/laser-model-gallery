@@ -17,6 +17,7 @@ class GalleryApp {
     this.generation = 0;
     this.previousFocus = undefined;
     this.threeRequested = false;
+    this.rotationIntent = null;
     this.disposed = false;
     this.listeners = [];
     this.on = this.on.bind(this);
@@ -35,7 +36,31 @@ class GalleryApp {
     this.closeViewer = this.closeViewer.bind(this);
     this.clearFilters = this.clearFilters.bind(this);
     this.dispose = this.dispose.bind(this);
+    this.connectTheme();
     this.connect();
+  }
+  connectTheme() {
+    const choice = this.$('#appearance');
+    const system = this.window.matchMedia?.('(prefers-color-scheme: dark)');
+    const apply = value => {
+      const selected = ['light', 'dark'].includes(value) ? value : 'system';
+      this.document.documentElement.dataset.theme = selected;
+      choice.value = selected;
+      const dark = selected === 'dark' || (selected === 'system' && system?.matches);
+      this.$('meta[name="theme-color"]').content = dark ? '#171c20' : '#f5f2ec';
+    };
+    try { apply(this.window.localStorage.getItem('laser-library-appearance')); }
+    catch { apply('system'); }
+    this.on(choice, 'change', () => {
+      apply(choice.value);
+      try { this.window.localStorage.setItem('laser-library-appearance', choice.value); } catch { /* Session-only choice when storage is unavailable. */ }
+    });
+    if (system) this.on(system, 'change', () => apply(choice.value));
+  }
+  rotationChanged(active) {
+    this.rotationIntent = active;
+    this.$('#turntable').setAttribute('aria-pressed', String(active));
+    this.$('#turntable').textContent = active ? 'Pause' : 'Rotate';
   }
   on(target, event, listener) {
     target.addEventListener(event, listener);
@@ -96,6 +121,7 @@ class GalleryApp {
     this.$('#canvas-host').replaceChildren();
     this.$('#viewer-controls').hidden = true;
     this.$('#turntable').setAttribute('aria-pressed', 'false');
+    this.$('#turntable').textContent = 'Rotate';
   }
   renderSelection() {
     const multiple = this.mode === 'compare';
@@ -155,6 +181,8 @@ class GalleryApp {
       if (this.disposed || token !== this.generation || !this.dialog.open)
         return;
       this.viewer = createViewer(this.$('#canvas-host'), {
+        rotation: this.rotationIntent,
+        onRotation: active => { if (token === this.generation) this.rotationChanged(active); },
         onStatus: message => {
           if (token === this.generation)
             this.$('#viewer-status').textContent = message;
@@ -193,6 +221,7 @@ class GalleryApp {
   closeViewer(updateHash = true) {
     this.stopViewer();
     this.threeRequested = false;
+    this.rotationIntent = null;
     if (this.document.fullscreenElement)
       this.document.exitFullscreen?.().catch(() => { });
     if (this.dialog.open)
@@ -257,10 +286,10 @@ class GalleryApp {
       const button = event.target.closest('[data-view]');
       if (button) {
         this.viewer?.preset(button.dataset.view);
-        this.$('#turntable').setAttribute('aria-pressed', 'false');
+        this.rotationChanged(false);
       }
     });
-    this.on(this.$('#turntable'), 'click', () => { const active = this.viewer?.toggleRotation() ?? false; this.$('#turntable').setAttribute('aria-pressed', String(active)); });
+    this.on(this.$('#turntable'), 'click', () => { const active = this.viewer?.toggleRotation() ?? false; this.rotationChanged(active); });
     this.on(this.$('#fullscreen'), 'click', async () => {
       try {
         if (this.document.fullscreenElement)

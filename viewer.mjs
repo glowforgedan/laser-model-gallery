@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { createTurntable } from './motion.mjs';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
@@ -23,7 +24,7 @@ export function disposeObject(root) {
 }
 export function createViewer(host, options) { return new GalleryViewer(host, options); }
 class GalleryViewer {
-  constructor(host, { onStatus, onError }) {
+  constructor(host, { onStatus, onError, onRotation = () => {}, rotation = null }) {
     this.host = host;
     this.onStatus = onStatus;
     this.onError = onError;
@@ -32,26 +33,23 @@ class GalleryViewer {
     this.preset = this.preset.bind(this);
     this.fit = this.fit.bind(this);
     this.load = this.load.bind(this);
-    this.tick = this.tick.bind(this);
     this.toggleRotation = this.toggleRotation.bind(this);
-    this.visibility = this.visibility.bind(this);
-    this.motionPreference = this.motionPreference.bind(this);
     this.keydown = this.keydown.bind(this);
     this.contextLost = this.contextLost.bind(this);
     this.focus = this.focus.bind(this);
     this.dispose = this.dispose.bind(this);
     this.renderer = undefined;
     try {
-      this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'low-power' });
+      this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'low-power' });
     }
     catch {
       throw new Error('WebGL is unavailable.');
     }
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.7));
-    this.renderer.setClearColor(0xe8e9df);
+    this.renderer.setClearColor(0x000000, 0);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.18;
+    this.renderer.toneMappingExposure = 1.05;
     this.canvas = this.renderer.domElement;
     this.canvas.tabIndex = 0;
     this.canvas.setAttribute('role', 'application');
@@ -79,28 +77,25 @@ class GalleryViewer {
     this.fill = new THREE.DirectionalLight(0xdce8ff, 2);
     this.fill.position.set(2, 2, -3);
     this.scene.add(this.fill);
+    this.ground = new THREE.Group();
+    this.scene.add(this.ground);
     this.models = new THREE.Group();
     this.scene.add(this.models);
     this.disposed = false;
-    this.rotation = false;
-    this.frame = 0;
-    this.lastTime = 0;
     this.fitDistance = 2;
     this.center = new THREE.Vector3();
     this.radius = 1;
     this.requests = new AbortController();
-    this.reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+    this.motion = createTurntable({ window, document, host, controls: this.controls, render: this.render, onChange: onRotation, rotation });
     this.controls.addEventListener('change', this.render);
     this.observer = new ResizeObserver(this.resize);
     this.observer.observe(this.host);
     this.presets = { perspective: new THREE.Vector3(1.1, .85, 1.25), front: new THREE.Vector3(0, .04, 1), rear: new THREE.Vector3(0, .04, -1), top: new THREE.Vector3(0, 1, .0001) };
     this.canvas.addEventListener('keydown', this.keydown);
     this.canvas.addEventListener('webglcontextlost', this.contextLost);
-    document.addEventListener('visibilitychange', this.visibility);
-    this.reducedMotion.addEventListener('change', this.motionPreference);
   }
   render() {
-    if (!this.disposed && !document.hidden && this.host.clientWidth && this.host.clientHeight)
+    if (!this.disposed && (this.motion?.canRender() ?? !document.hidden) && this.host.clientWidth && this.host.clientHeight)
       this.renderer.render(this.scene, this.camera);
   }
   resize() {
@@ -115,9 +110,7 @@ class GalleryViewer {
   }
   preset(name) {
     const direction = this.presets[name] ?? this.presets.perspective;
-    this.rotation = false;
-    cancelAnimationFrame(this.frame);
-    this.controls.autoRotate = false;
+    this.motion.pause();
     this.camera.position.copy(this.center).addScaledVector(direction.clone().normalize(), this.fitDistance);
     this.camera.up.set(0, 1, 0);
     this.controls.target.copy(this.center);
@@ -170,6 +163,7 @@ class GalleryViewer {
       object.position.z -= middle.z;
       object.name = `${product.brand} ${product.name} / ${variant.name}`;
       this.models.add(object);
+      this.addContactShadow(object.position.x + middle.x, size);
       x += size.x + .12;
     }
     if (this.disposed)
@@ -177,47 +171,28 @@ class GalleryViewer {
     this.fit();
     this.host.append(this.canvas);
     this.resize();
+    this.motion.start();
   }
-  tick(time) {
-    if (!this.rotation || this.disposed || document.hidden)
-      return;
-    this.controls.update(Math.min((time - this.lastTime) / 1000 || 0, .05));
-    this.lastTime = time;
-    this.render();
-    this.frame = requestAnimationFrame(this.tick);
-  }
-  toggleRotation() {
-    this.rotation = !this.rotation;
-    this.controls.autoRotate = this.rotation;
-    this.controls.autoRotateSpeed = this.reducedMotion.matches ? .3 : .65;
-    if (this.rotation && !document.hidden) {
-      this.lastTime = performance.now();
-      this.frame = requestAnimationFrame(this.tick);
+  addContactShadow(x, size) {
+    // A translucent, feathered grounding patch. No opaque floor or model recoloring.
+    const pixels = new Uint8Array(64 * 64 * 4);
+    for (let y = 0; y < 64; y++) for (let column = 0; column < 64; column++) {
+      const radius = Math.hypot((column - 31.5) / 31.5, (y - 31.5) / 31.5);
+      pixels[(y * 64 + column) * 4 + 3] = Math.round(45 * Math.pow(Math.max(0, 1 - radius), 2));
     }
-    else
-      cancelAnimationFrame(this.frame);
-    return this.rotation;
+    const texture = new THREE.DataTexture(pixels, 64, 64);
+    texture.needsUpdate = true;
+    const material = new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false, side: THREE.DoubleSide });
+    const shadow = new THREE.Mesh(new THREE.PlaneGeometry(size.x * 1.35, size.z * 1.35), material);
+    shadow.rotation.x = -Math.PI / 2;
+    shadow.position.set(x, -.0005, 0);
+    this.ground.add(shadow);
   }
-  visibility() {
-    cancelAnimationFrame(this.frame);
-    if (!document.hidden) {
-      this.render();
-      if (this.rotation) {
-        this.lastTime = performance.now();
-        this.frame = requestAnimationFrame(this.tick);
-      }
-    }
-  }
-  motionPreference() {
-    if (this.reducedMotion.matches && this.rotation) {
-      this.rotation = false;
-      this.controls.autoRotate = false;
-      cancelAnimationFrame(this.frame);
-    }
-  }
+  toggleRotation() { return this.motion.toggle(); }
   keydown(event) {
     const offset = this.camera.position.clone().sub(this.controls.target);
     const spherical = new THREE.Spherical().setFromVector3(offset);
+    if (['Home', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', '+', '=', '-', '_'].includes(event.key)) this.motion.pause();
     if (event.key === 'Home')
       this.preset('perspective');
     else if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', '+', '=', '-', '_'].includes(event.key)) {
@@ -254,15 +229,15 @@ class GalleryViewer {
       return;
     this.disposed = true;
     this.requests.abort();
-    cancelAnimationFrame(this.frame);
+    this.motion.dispose();
     this.observer.disconnect();
     this.controls.removeEventListener('change', this.render);
     this.controls.dispose();
     this.canvas.removeEventListener('keydown', this.keydown);
     this.canvas.removeEventListener('webglcontextlost', this.contextLost);
-    document.removeEventListener('visibilitychange', this.visibility);
-    this.reducedMotion.removeEventListener('change', this.motionPreference);
     disposeObject(this.models);
+    disposeObject(this.ground);
+    this.ground.clear();
     this.models.clear();
     this.scene.environment = null;
     this.environment.dispose();
